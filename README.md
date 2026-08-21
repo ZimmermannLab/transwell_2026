@@ -132,18 +132,6 @@ The main dependent analyses should be run in this order:
 
 ## Files still missing from the current Zenodo preview
 
-The preview was checked on 21 August 2026. It currently contains 25 files, but the following files referenced by the analyses are not yet included:
-
-- `NEW_pooling_scheme_info_with_IS.csv`
-- `Mapping_BugDrug_all_binary.csv`
-- `TP8_ttest_results.RDS`
-- `AB005_results_p02_10percent_241126.csv`
-- `mimedb_metabolites_v20240319.csv`
-- `AB007_baso_ttest_candidates.csv`
-- `AB007_api_ttest_candidates.csv`
-
-Add these files to Zenodo if they are intended to be downloaded automatically. The code already looks for them in `input_folder/`.
-
 The raw AB007 `.mzML` files are intentionally hosted in [MetaboLights study MTBLS12528](https://www.ebi.ac.uk/metabolights/MTBLS12528), rather than in the Zenodo record. Download the required raw files from MetaboLights and place them in `input_folder/` before running the EIC-extraction sections of `Fig4_analysis.R` or `Fig4CD_plots.R`.
 
 ## Citation

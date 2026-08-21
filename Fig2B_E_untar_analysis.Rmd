@@ -1,0 +1,654 @@
+---
+title: "AB005_prepro_MZMine"
+output: html_document
+date: "2024-05-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Script for preprocessing & selecting untar ions
+
+## 0. Set-up
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+## 1. Read-in data
+
+```{r}
+
+data_list = list.files("input_folder", pattern = "^MZMINE_.*_quant\\.csv$", full.names = TRUE)
+
+data = lapply(data_list, fread)
+#data = lapply(data, setDF)
+
+# for loop throuhg list 
+# run function
+mzmine_peaks = list()
+mzmine_areas = list()
+for(df in data){
+  
+  # tidy data 
+  df$feature_ID = paste0("FT", df$`row ID`)
+  # separate the peak_info from the areas 
+  mzmine_peak = df[, c(1:13)]
+  mzmine_peak$feature_ID = df$feature_ID
+  mzmine_area = df %>% 
+    dplyr::select(contains("pool"))
+  mzmine_area = cbind(df$feature_ID, mzmine_area)
+  
+  strain = sapply(strsplit(as.character(colnames(df)[26]), "_"), '[', 2)
+  # add dfs to new lists 
+  mzmine_peaks[[strain]] = mzmine_peak
+  mzmine_areas[[strain]] = mzmine_area
+}
+
+lapply(mzmine_peaks, dim)
+
+#mzmine_areas = mzmine_areas[-4]
+
+```
+
+## 2. Compare pools to find potential drug metabolites
+
+```{r}
+# read-in pool file
+pools = read_csv(file.path("input_folder", "NEW_pooling_scheme_info_with_IS.csv"))
+pools = pools %>% 
+  dplyr::filter(!(grepl("IS_", Product.Name)))
+
+# function to transpose and prep each df 
+prep_df = function(complete_df){
+  
+  # transpose df 
+  my_dataset_t = setDT(data.table::transpose(complete_df, keep.names = "rn"))
+  
+  # set colnames for my_dataset_t
+  colnames(my_dataset_t) = as.character(c("sample_name", complete_df$V1))
+  my_dataset_t = my_dataset_t[-1, ]
+  
+  # set abundances columns as numeric 
+  my_dataset_t[, 2:dim(my_dataset_t)[2]] <- 
+    lapply(my_dataset_t[,2:dim(my_dataset_t)[2]], as.numeric)
+  
+  # log-transform data 
+  prelog_data = my_dataset_t[,2:dim(my_dataset_t)[2]]
+  # set 0 values to 1 
+  prelog_data[prelog_data == 0] <- 1
+  log_data <- log(prelog_data, 2)
+  
+  # include pool & TP metadata 
+  sample_name = my_dataset_t$sample_name
+  log_data = cbind(sample_name, log_data)
+  log_data$pool = sapply(strsplit(as.character(log_data$sample_name), "_"), '[', 3)
+  log_data$TP = sapply(strsplit(as.character(log_data$sample_name), "_"), '[', 4)
+  
+  log_data = log_data %>% 
+    dplyr::filter(TP == "TP8")
+  
+}
+
+# run function for mzmine_areas 
+log_mzmine_areas = lapply(mzmine_areas, function(x){prep_df(complete_df = x)})
+
+
+
+# function to compare all TPs of pools with and without drug
+compare_drug = function(log_data, pool_file){ 
+  
+  # compare per drug 
+  # compare all metabolites in drug-containing pools (n=4) vs all other pools (n=28)
+  
+  # read-in drug-pools 
+  pool_info = pool_file
+  pool_info = na.omit(pool_info)
+  
+  # make list of pools per drug 
+  to_include = apply(pool_info, 1, function(x) colnames(pool_info)[which(x == 1)])
+  names(to_include) = pool_info$Product.Name
+  
+  # set empty list to collect wilcoxon results 
+  results = list()
+  
+  for (d in names(to_include)){
+    
+    # select data per drug 
+    df1 = log_data %>%
+      filter(pool %in% to_include[[d]]) %>% 
+      dplyr::select(-c(sample_name, pool, TP)) %>% 
+      as.matrix() 
+    
+    df2 = log_data %>%  
+      filter(!pool %in% to_include[[d]]) %>% 
+      dplyr::select(-c(sample_name, pool, TP)) %>% 
+      as.matrix()
+    
+    # Create an empty matrix
+    pvalue = matrix(NA, ncol(df1), ncol=4)
+    
+    # run T-test per drug & calculate fold change 
+    for(i in 1:length(colnames(df1))){
+      FC = mean(df1[,i], na.rm = T) - mean(df2[,i], na.rm=T) # FC is calculated by subtraction, because values are already log2-transformed
+      test_result = t.test(df1[,i], df2[,i], alternative = "two.sided", paired=F)
+      pvalue[i, 1] <- test_result$p.value
+      pvalue[i, 2] <- test_result$statistic
+      pvalue[i, 4] <- FC
+      row.names(pvalue) <- colnames(df1)
+    }
+    
+    # do p-value adjustment
+    pvalue[, 3] <- stats::p.adjust(pvalue[, 1], method="BH",
+                                   n=length(na.omit(pvalue[, 1])))
+    
+    colnames(pvalue) = c("pvalue", "statistic", "pajd", "FoldChange")
+    
+    results[[d]] = pvalue
+    
+  } 
+  
+  return(results)
+
+}
+
+
+# run function for mzmine_areas 
+TP8_pools_results = lapply(log_mzmine_areas, function(x){compare_drug(log_data = x, pool_file = pools)})
+
+#saveRDS(TP8_pools_results, "TP8_ttest_results.RDS")
+#TP8_pools_results_save = TP8_pools_results
+#save(pools_results, file ="AB005_mzmine_pools_results.RData")
+#load("AB005_mzmine_pools_results.RData")
+
+TP8_pools_results = readRDS(file.path("input_folder", "TP8_ttest_results.RDS"))
+
+# add rownames as column 
+pools_results = lapply(save_pools_results, function(x){
+  for(i in x){
+  i=i %>% as.data.frame(i) %>% 
+    rownames_to_column(var = "feature_ID")}
+  return(x)})
+
+
+# run for loop to display pvalue hists 
+p_list = list()
+n=0
+for(i in TP8_pools_results){
+  
+  p_vals = lapply(i, function(x) x[x[,3]]) # take adj p-val
+  p_vals = unlist(p_vals)
+  #p_vals = do.call(p_vals, function(x) unlist(x))
+  p_vals = reshape2::melt(p_vals)
+  
+  n=n+1
+  p_list[[n]] = ggplot(p_vals, aes(x=value))+
+    geom_histogram()
+  
+}
+library(gridExtra)
+do.call("grid.arrange", c(p_list))
+
+
+#### select only the ions for which p-val < 0.01 ####
+select_ions = function(results){ 
+  library(purrr)
+  results = lapply(results, function(x) as.data.frame(x))
+  selected_ion = purrr::map(results, ~.x %>% filter(pajd < 0.01 & abs(FoldChange) > 2))
+  
+  test = bind_rows(selected_ion, .id = "column_label")
+  colnames(test) <- c("drug", "pval", "statistic", "padj", "FoldChange")
+  
+  
+  ions = lapply(selected_ion, function(x) rownames(x))
+  # gather ions 
+  ions = ions %>% 
+    purrr::map(as_tibble) %>% 
+    bind_rows(., .id = "column_label")
+  
+  # add ion names to test
+  ions = cbind(test, ions) 
+  #ions$value = as.character(ions$value)
+  
+  
+  return(ions)
+}
+
+
+results = lapply(TP8_pools_results, select_ions)
+
+```
+
+## 2B. Match ions to ion_info
+
+```{r}
+
+names(results)
+names(mzmine_peaks)
+pool_info = na.omit(pools)
+
+ions_info = list()
+for (i in seq_along(results)) {
+  
+  strain = names(results)[i]
+  df = results[[i]]
+  
+  peaks = mzmine_peaks[[strain]]
+  
+  # get peak info on ions
+  ions = left_join(df,
+                   peaks[,c(2,3,9,13,14)],
+                   by = c("value" = "feature_ID"))
+  
+  
+  ions = left_join(ions, 
+                        pool_info[30:32], 
+                        by = c("drug" = "Product.Name"))
+  
+  ions_info[[strain]] = ions 
+  
+  
+  
+}
+
+# bind ions from different experiments together in one df 
+results = bind_rows(ions_info, .id = "strain")
+table(results$strain)
+length(unique(results$drug))
+
+```
+
+##3A. Filter for different mass and RT than parent drug
+
+```{r}
+
+# calculate deltaRT between parent and potential metabolite 
+my_df = left_join(results, pool_info[, c(30, 35)], 
+                  by = c("column_label" = "Product.Name"))
+
+my_df$deltaRT = my_df$RT.NR - my_df$`row retention time`
+
+# calculate deltaMZ between parent and potential metabolite 
+my_df$deltaMZ = my_df$`row m/z` - my_df$M.SD
+
+# check distribution of delta values 
+hist(my_df$deltaMZ)
+hist(my_df$deltaRT)
+
+
+# make metabolite selection: different m/z than parent compound & different RT 
+my_df_fil = my_df %>% 
+  filter(abs(deltaMZ) > 1 & (deltaRT < -0.3 | deltaRT > 0.3))
+nrow(my_df)
+nrow(my_df_fil)
+
+```
+
+##3B. Filter for drug-specificity
+
+```{r}
+# round up mz value for easier matching
+my_df_fil$round_mz = round(my_df_fil$`row m/z`, digits = 2)
+drug_candidates = my_df_fil %>% 
+  group_by(strain, round_mz) %>% 
+  mutate(ion_count = n_distinct(drug)) 
+
+hist(drug_candidates$ion_count)
+ggplot(drug_candidates, aes(x=ion_count)) + 
+  geom_histogram() + 
+  facet_wrap(~strain)
+
+drug_candidates = drug_candidates %>%
+  dplyr::filter(ion_count == 1)
+nrow(drug_candidates)
+
+drug_candidates %>% 
+  group_by(strain) %>% 
+  summarise(ion_count = n_distinct(value))
+
+```
+
+##3C. Delete ions that are also for that drug in nobug
+
+```{r}
+# test whether mz value of ion overlaps with nobug experiment 
+test = drug_candidates %>% 
+  group_by(round_mz) %>% # check mz value & RT match up until 2 sec /2 decimals 
+  summarise(shared = paste(strain, collapse = ",")) %>% 
+  mutate(exclude = str_detect(shared, "nobug"))
+
+test = test[test$exclude == TRUE, ]
+
+# when mzvalue also in nobug experiment, delete ion from candidates 
+candidates = anti_join(drug_candidates, test, 
+                       by = "round_mz")
+
+# check distribution 
+hist(candidates$deltaMZ)
+hist(candidates$deltaRT)
+
+table(candidates$strain)
+
+
+```
+
+
+## 4A. Read all peaks files 
+```{r}
+
+# transpose dfs in allpeaks
+allpeaks_t = lapply(mzmine_areas, function(x){ 
+  setDT(data.table::transpose(x, keep.names = "rn"))})
+
+# define colnames 
+columns = lapply(allpeaks_t, function(x) as.character(x[1, ]))
+# delete first row 
+allpeaks_t = lapply(allpeaks_t, function(x) dplyr::slice(x, -1))
+
+# set colnames to each df 
+for (i in seq_along(allpeaks_t)) {
+  
+  colnames(allpeaks_t[[i]]) <- columns[[i]]
+  
+}
+
+# set all columns to numeric 
+allpeaks_t = lapply(allpeaks_t, function(x) 
+  mutate_at(x, .vars = 2:dim(x)[2], .funs = as.numeric))
+
+# set df for each data frame
+allpeaks_t = lapply(allpeaks_t, setDF)
+
+
+# define function to add metadata to each dataframe 
+add_metadata = function(x){ 
+  
+  x$strain = sapply(strsplit(as.character(x[,1]), "_"), '[', 2)
+  x$pool = sapply(strsplit(as.character(x[,1]), "_"), '[', 3)
+  x$TP = sapply(strsplit(as.character(x[,1]), "_"), '[', 4)
+  x$well_location = sapply(strsplit(as.character(x[,1]), "_"), '[', 5)
+  x$date = sapply(strsplit(as.character(x[,1]), "_"), '[', 6)
+  
+  
+  return(x)
+}
+
+allpeaks_t = lapply(allpeaks_t, add_metadata)
+```
+
+##4B. Calculate pool specificity 
+```{r}
+#### calculate fold change between TP0 and TP8 ####
+library(data.table)
+FCtime = data.frame(matrix(ncol=8,nrow=0, dimnames=list(NULL, c("FC_time", "value", "drug", "meanTP8", 
+                                                                "mean_non", "median_non", "medianTP8", "strain"))))
+# calculate FC of ion over time (0-8hours)
+for (i in 1:nrow(candidates)) { 
+  
+  # collect info on ion
+  value = candidates$value[i]
+  strain = candidates$strain[i]
+  drug = candidates$drug[i]
+  
+  df = allpeaks_t[[strain]]
+  setDF(df)
+  
+  pools = to_include[[drug]]
+  
+  df$pool_include = df$pool %in% pools
+  
+  df_select = df %>% 
+    dplyr::select(TP, !!value, pool_include) %>% 
+    filter(pool_include == T) 
+  
+  TP0 = df_select %>% 
+    filter(TP == "TP0")
+  meanTP0 = mean(TP0[, 2], na.rm=T)
+  
+  
+  TP8 = df_select %>% 
+    filter(TP == "TP8")
+  meanTP8 = mean(TP8[, 2], na.rm=T)
+  medianTP8 = stats::median(TP8[, 2], na.rm=T)
+  
+  FC_time = meanTP8/meanTP0
+  
+  df_non = df %>% 
+    dplyr::select(!!value, pool_include, TP) %>% 
+    filter(pool_include == F) %>% 
+    filter(TP == "TP8")
+  
+  mean_non = mean(df_non[,1], na.rm=T)
+  median_non = median(df_non[,1], na.rm = T)
+  
+  # add FC_time to new dataframe 
+  FCtime[i, 1] = FC_time
+  FCtime[i, 2] = value
+  FCtime[i, 3] = drug
+  FCtime[i, 4] = meanTP8
+  FCtime[i, 5] = mean_non
+  FCtime[i, 6] = median_non
+  FCtime[i, 7] = medianTP8
+  FCtime[i, 8] = strain
+  
+  
+}
+
+# Check FCtime 
+# check distribution of FCtime 
+ggplot(FCtime, aes(x=log2(FC_time))) + 
+  geom_density()
+
+
+# add log2(FC) value 
+FCtime$log2FCtime = log2(FCtime$FC_time)
+
+# how many ions per strain? 
+FCtime %>% 
+  group_by(strain) %>% 
+  summarise(count = n_distinct(value))
+
+
+# select ions for which the area in the non-pools in low of the pools area at TP8
+FCtime$pool_percentage = (FCtime$mean_non / FCtime$meanTP8)*100
+FCtime$pool_median = (FCtime$median_non / FCtime$medianTP8)*100
+
+ggplot(FCtime, aes(x=pool_percentage)) + 
+  geom_density()
+hist(FCtime$pool_percentage)
+
+# select only if non detected in non-pools 
+tmp = FCtime %>%
+  #filter(FC_time > 1) %>%
+  filter( pool_percentage <= 10 & pool_median <= 100)
+hist(tmp$pool_percentage, breaks =60)
+hist(tmp$pool_median, breaks =60)
+
+
+### select candidates for FC ###
+candidates = left_join(tmp, drug_candidates,
+                                by = c("value", "strain", "drug"))
+
+table(candidates$strain)
+
+```
+
+
+##4C. Test for drug-specificty
+```{r}
+
+names(allpeaks_t)
+unique(candidates$strain)
+
+# make list of pools per drug 
+to_include = apply(pool_info, 1, function(x) colnames(pool_info)[which(x == 1)])
+names(to_include) = pool_info$Product.Name
+
+# set new empty dataframe 
+candidate_df = data.frame(matrix(ncol=3,nrow=0, dimnames=list(NULL, c("value", "strain", "drug"))))
+
+## loop over all candidate ions and check plot pools that contain the drug vs without
+pdf("./Plots/MZmine_plots/candidates_timecourse_pools_241127.pdf")
+for (i in 1:nrow(candidates)) { 
+  
+  # collect info on ion
+  value = candidates$value[i]
+  strain = candidates$strain[i]
+  drug = candidates$drug[i]
+  
+  df = allpeaks_t[[strain]]
+  
+  pools = to_include[[drug]]
+  
+  df$pool_include = df$pool %in% pools
+  
+  df_temp = df %>% 
+    filter(pool_include == T) %>% 
+    dplyr::select(V1, strain, pool, TP, well_location, pool_include, all_of(value)) %>% 
+    na.omit()
+  
+  include = length(unique(df_temp$pool))
+    
+  if(include >=3){ 
+    candidate_df[i, 1] = value
+    candidate_df[i, 2] = strain
+    candidate_df[i, 3] = drug
+  }
+    
+  if (include >= 3){
+  p=ggplot(df, aes_string(x="TP", y=value, color="pool_include", label="pool")) +
+    geom_point() +
+    geom_line(aes(group=pool)) +
+    geom_text(check_overlap = T) +
+    labs(title= paste0("Timecourse ", value, " from: ", strain, " and", " drug: ", drug),
+        x = "Time (hours)",
+        y = "Raw peak area") +
+    theme_minimal()
+
+  print(p)
+  }
+  
+}
+dev.off()
+
+candidate_df = na.omit(candidate_df)
+table(candidate_df$strain)
+
+# merge candidate df with candidates for info on ions 
+integration_df = left_join(candidate_df, drug_candidates, 
+                         by = c("drug",
+                                "value", "strain"))
+
+# save only relevant info 
+integration_df = integration_df %>% 
+  dplyr::select(value, strain, drug, padj, FoldChange, `row m/z`, `row retention time`, deltaMZ, deltaRT, M.SD, RT.NR)
+
+table(integration_df$strain)
+
+# write integration_df
+write.csv(integration_df, "./240607_mzmine_candidates.csv")
+
+```
+
+## 4D. Subset integration_df for degraded drugs 
+```{r}
+degraded_drugs = read.csv(file.path("input_folder", "AB005_results_p02_10percent_241126.csv"))
+
+setdiff(unique(degraded_drugs$strain), unique(integration_df$strain))
+
+degraded_drugs$combo = paste0(degraded_drugs$Product.Name, "_", degraded_drugs$strain)
+integration_df$combo = paste0(integration_df$drug, "_", integration_df$strain)
+
+drug_metabolites = integration_df %>% 
+  filter(combo %in% degraded_drugs$combo)
+
+physio_metabolites = integration_df %>% 
+  filter(!(combo %in% degraded_drugs$combo))
+
+```
+
+
+### 4D1. Plots for drug mets 
+```{r}
+# Function to standardize ggplot theme
+cell_plot_theme <- theme(
+  text = element_text(family = "Arial", size = 8), # Set Arial font and text size
+  axis.text = element_text(size = 8), # Adjust axis text size
+  axis.title = element_text(size = 10), # Adjust axis title size
+  legend.text = element_text(size = 8), # Adjust legend text size
+  legend.title = element_text(size = 8), # Adjust legend title size
+  plot.title = element_text(size = 12, hjust = 0.5), # Center title
+  panel.background = element_blank(), # Remove background color
+  panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5), # Add border
+  panel.grid.major = element_blank(), # Subtle grid
+  panel.grid.minor = element_blank(), # No minor grid
+  plot.margin = margin(5, 5, 5, 5) # Adjust margins
+)
+
+unique(drug_metabolites$strain)
+# recode strain names 
+drug_metabolites$strain <- recode(
+  drug_metabolites$strain,
+  "Anaeslundi" = "A. naeslundi",
+  "Aomnicolens" = "A. omnicolens",
+  "Btheta" = "B. thetaiotaomicron",
+  "Buni" = "B. uniformis",
+  "Ccomes" = "C. comes",
+  "Cramosum" = "C. ramosum",
+  "Cscindens" = "C. scindens",
+  "Dformi" = "D. formicigenerans",
+  "Ef2" = "E. faecalis",
+  "Ghaemolysans" = "G. haemolysans"
+)
+
+
+# make barplot of mets per strain 
+p = drug_metabolites %>% 
+  group_by(strain) %>% 
+  summarise(count = n_distinct(value)) %>% 
+  ggplot(., aes(x=reorder(strain, -count), y=count)) +
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  theme_minimal() +
+  labs(y = "No. of drug metabolites") + 
+  theme(axis.text.y = element_text(face = "italic"), 
+        axis.title.y = element_blank()) +
+  cell_plot_theme 
+
+print(p)
+ggsave("./Plots/AB005_untar_count.tiff", plot = p, dpi = 300, width = 3, height = 2, units = "in")
+
+# plot distribution of mzvalues & deltaRT 
+# make long df with delta values 
+delta_long = pivot_longer(drug_metabolites, 
+                          cols = c(deltaMZ, deltaRT),
+                          values_to = "drug_info")
+
+# plot delta RT distribution
+delta_long %>% 
+  filter(name == "deltaRT") %>%
+  ggplot(., aes(y=drug_info, x=name, fill = name)) +
+  geom_boxplot(width = .2, outlier.shape = NA) + 
+  geom_jitter(width = .05, alpha = .3) +
+  theme_minimal() +
+  scale_fill_manual(values = c("deltaMZ" = "lightpink", "deltaRT" = "purple"))
+
+
+# calculate deltamz prevalence 
+delta_long$round_mz = round(delta_long$drug_info, digits = 1)
+  
+delta_long %>% 
+  filter(name == "deltaMZ") %>% 
+  group_by(round_mz) %>% 
+  summarise(count = n_distinct(drug_info)) %>%
+  arrange(desc(count)) %>% 
+  ggplot(., aes(x=round_mz)) +
+  geom_histogram() +
+  cell_plot_theme + 
+  labs(x="delta m/z value", y="")
+ggsave("./Plots/AB005_deltaMZ.tiff", dpi = 600, width = 3, height = 2, units = "in")
+
+```
+

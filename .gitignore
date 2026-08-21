@@ -1,0 +1,24 @@
+# Downloaded input data
+Input_data/
+input_folder/
+
+# Generated analysis outputs
+Plot/
+Plots/
+Env/
+output/
+EIC_output/
+EIC_output_mzmine/
+
+# Generated figures and documents
+*.tiff
+*.png
+*.pdf
+*.html
+
+# R and macOS files
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
+

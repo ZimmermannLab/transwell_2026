@@ -4,7 +4,7 @@ This repository contains the R scripts used for the targeted and untargeted meta
 
 ## Download the input data
 
-The data are stored as flat files in this [unpublished Zenodo preview](https://zenodo.org/records/22044327?preview=1&token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6IjBjOWNkZmU0LTQ0YWYtNGM1NC1iMmVjLWQ5ZjFkNWUyNTBmNSIsImRhdGEiOnt9LCJyYW5kb20iOiI1YTk4MjI3NjQ5NjcxOTM3ZTc2NGVjODE5ZDA1NjFmOCJ9.jEVYwx-yi_9xN8WLCdwnBe7zvyHErlPygNNLPLk9NNYubLpb0I4sLPb6Dn6ZIplN8oY1ZPQy9COVF0m8BMXDzg). The preview token is included because the record has not yet been published.
+The data are stored as flat files in this Zenodo link: https://zenodo.org/records/22044327. 
 
 All raw mass-spectrometry files and associated study metadata are available from [MetaboLights study MTBLS12528](https://www.ebi.ac.uk/metabolights/MTBLS12528). The Zenodo record contains the processed input tables used by the analysis scripts in this repository.
 

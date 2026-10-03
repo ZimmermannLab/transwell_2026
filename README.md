@@ -55,8 +55,6 @@ The analysis scripts expect this layout:
     └── mzmine_dmso_api_baso__quant.csv
 ```
 
-> **Pre-publication note:** the preview URL contains an access token. Anyone with access to this GitHub repository can use it to view and download the unpublished data. After the Zenodo record is published, replace the preview URL in this README and in `download_zenodo_inputs.R` with the permanent record URL or DOI.
-
 ## R packages
 
 The scripts require the following CRAN and Bioconductor packages:

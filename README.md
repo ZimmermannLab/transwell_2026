@@ -112,15 +112,6 @@ The 11 MZmine tables correspond to *A. naeslundii*, *A. omnicolens*, *B. thetaio
 
 ## Run the analyses
 
-Run commands from the repository root. Examples:
-
-```bash
-Rscript Fig1_marker_analysis.R
-Rscript 'Fig1E_Cell_viability&TEER.R'
-Rscript -e 'rmarkdown::render("Fig2B_E_untar_analysis.Rmd")'
-Rscript Fig2EF_Drugassay.R
-```
-
 The main dependent analyses should be run in this order:
 
 1. `Fig2A_tardrug_analysis_pipeline.R`
